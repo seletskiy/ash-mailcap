@@ -1,3 +1,5 @@
+![screencast](https://cloud.githubusercontent.com/assets/674812/9040318/d78cdf46-39f0-11e5-87d4-447a44b62b10.gif)
+
 This program is an integration between mutt and
 [ash](https://github.com/seletskiy/ash).
 
