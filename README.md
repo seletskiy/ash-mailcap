@@ -11,7 +11,7 @@ editor executable, so review will be scrolled down to the mentioned comment.
 
 ## ArchLinux
 
-Via (AUR)[https://aur4.archlinux.org/packages/ash-mailcap] or self built
+Via [AUR](https://aur4.archlinux.org/packages/ash-mailcap) or self built
 package:
 ```
 git clone https://github.com/seletskiy/ash-mailcap
