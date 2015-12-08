@@ -50,7 +50,7 @@ Options:
 `
 
 var reStashCommentLink = regexp.MustCompile(
-	`http://.*/(?:projects|users)/[^/]+/repos/[^/]+/` +
+	`http://[^/]+/(?:projects|users)/[^/]+/repos/[^/]+/` +
 		`pull-requests/\d+/overview\?commentId=(\d+)`,
 )
 
