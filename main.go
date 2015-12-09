@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -65,12 +69,12 @@ func main() {
 
 	inputFile, err := os.Open(args["<file>"].(string))
 	if err != nil {
-		fmt.Print("can't open specified file: %s", err)
+		log.Fatalf("can't open specified file: %s", err)
 	}
 
 	inputData, err := ioutil.ReadAll(inputFile)
 	if err != nil {
-		fmt.Print("can't read specified file: %s", err)
+		log.Fatalf("can't read specified file: %s", err)
 	}
 
 	editorTemplate := template.Must(
@@ -84,45 +88,81 @@ func main() {
 	}
 
 	matches := reStashCommentLink.FindStringSubmatch(string(inputData))
-	if len(matches) == 0 {
-		if args["-x"] != nil {
-			externalProgram := exec.Command(
-				"/bin/sh", "-c", args["-x"].(string),
-			)
+	if len(matches) != 0 {
+		var (
+			reviewURL = matches[0]
+			commentID = matches[1]
+		)
 
-			externalProgram.Stdin = os.Stdin
-			externalProgram.Stdout = os.Stdout
-			externalProgram.Stderr = os.Stderr
-
-			err = externalProgram.Start()
-			if err != nil {
-				log.Printf("can't start external command: %s", err)
-				os.Exit(1)
-			} else {
-				err := externalProgram.Wait()
-				if err != nil {
-					log.Printf("error running external program: %s", err)
-					os.Exit(3)
-				}
-
-				os.Exit(0)
-			}
-		} else {
-			log.Printf("specified file does not contains link to comment")
-			os.Exit(1)
-		}
+		openTempEditor(editorTemplate, reviewURL, commentID)
+		os.Exit(0)
 	}
 
-	var (
-		reviewURL = matches[0]
-		commentID = matches[1]
+	if args["-x"] == nil {
+		log.Printf("specified file does not contains link to comment")
+		os.Exit(1)
+	}
+
+	openExternalProgram(args["-x"].(string))
+}
+
+func openExternalProgram(cmdline string) {
+	externalProgram := exec.Command(
+		"/bin/sh", "-c", cmdline,
 	)
+
+	externalProgram.Stdin = os.Stdin
+	externalProgram.Stdout = os.Stdout
+	externalProgram.Stderr = os.Stderr
+
+	err := externalProgram.Start()
+	if err != nil {
+		log.Printf("can't start external command: %s", err)
+		os.Exit(1)
+	} else {
+		err := externalProgram.Wait()
+		if err != nil {
+			log.Printf("error running external program: %s", err)
+			os.Exit(3)
+		}
+
+		os.Exit(0)
+	}
+}
+
+func openTempEditor(
+	editorTemplate *template.Template,
+	reviewURL string,
+	commentID string,
+) {
+	hash := getHash(reviewURL, commentID)
+
+	cachePath := filepath.Join(os.TempDir(), "ash-mailcap-cache."+hash)
+	cacheFile, err := os.OpenFile(cachePath, os.O_CREATE|os.O_RDWR, 0664)
+	if err != nil {
+		log.Printf("can't open cache file %s: %s", cachePath, err)
+		return
+	}
+
+	defer cacheFile.Close()
+
+	cacheData, err := ioutil.ReadAll(cacheFile)
+	if err != nil {
+		log.Printf("can't read cache file %s: %s", cachePath, err)
+		return
+	}
+
+	if len(cacheData) > 0 {
+		fmt.Print(string(cacheData))
+		return
+	}
 
 	tempEditorExecutable, err := ioutil.TempFile(
 		os.TempDir(), "ash-mailcap-editor.",
 	)
 	if err != nil {
 		log.Printf("can't create temporary file: %s", err)
+		return
 	}
 
 	defer func() {
@@ -134,9 +174,10 @@ func main() {
 		log.Printf(
 			"can't chmod +x <%s>: %s", tempEditorExecutable.Name(), err,
 		)
+		return
 	}
 
-	editorTemplate.Execute(tempEditorExecutable, map[string]interface{}{
+	editorTemplate.Execute(tempEditorExecutable, map[string]string{
 		"ReviewURL": reviewURL,
 		"CommentID": commentID,
 	})
@@ -152,8 +193,9 @@ func main() {
 	)
 
 	ash.Stdin = os.Stdin
-	ash.Stdout = os.Stdout
-	ash.Stderr = os.Stderr
+
+	ash.Stdout = io.MultiWriter(os.Stdout, cacheFile)
+	ash.Stderr = io.MultiWriter(os.Stderr, cacheFile)
 
 	err = ash.Run()
 	if err != nil {
@@ -166,4 +208,10 @@ func main() {
 			log.Printf("can't run ash: %s", err)
 		}
 	}
+}
+
+func getHash(identifiers ...string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(strings.Join(identifiers, "__")))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
