@@ -42,15 +42,19 @@ Usage:
 Options:
   -h --help      Show this help message.
   -t <template>  Path to file, that will be used as template file for mocking
-                 editor.
-                 Example for this file is given above.
-                 If file is not specified, default value will be used.
-                 File should be written using golang template syntax, and two
-                 variable will be passed:
-                     * .CommentID - comment, mentioned in the <file>;
-                     * .ReviewURL - full URL for the review;
+                  editor.
+                  Example for this file is given above.
+                  If file is not specified, default value will be used.
+                  File should be written using golang template syntax, and two
+                  variable will be passed:
+                  * .CommentID - comment, mentioned in the <file>;
+                  * .ReviewURL - full URL for the review;
   -x <action>    Action that will be executed if specified file does not
-                 contains link to comment.
+                  contains link to comment.
+  -c             Cache ash answer and show cached output if available. Do not
+                  call editor, if cache is found.
+				  NOTE: use of interactive editor is not possible with that
+				  flag, because stdout will be redirected to the cache file.
 `
 
 var reStashCommentLink = regexp.MustCompile(
@@ -63,11 +67,18 @@ func main() {
 		strings.Replace(usage, "$0", os.Args[0], -1), nil, true, "1.0", false,
 	)
 
+	var (
+		inputFileName       = args["<file>"].(string)
+		templateFileName, _ = args["-t"].(string)
+		fallbackAction, _   = args["-x"].(string)
+		useCache            = args["-c"].(bool)
+	)
+
 	if err != nil {
 		panic(err)
 	}
 
-	inputFile, err := os.Open(args["<file>"].(string))
+	inputFile, err := os.Open(inputFileName)
 	if err != nil {
 		log.Fatalf("can't open specified file: %s", err)
 	}
@@ -81,29 +92,44 @@ func main() {
 		template.New("").Parse(defaultEditorWrapper),
 	)
 
-	if args["-t"] != nil {
+	if templateFileName != "" {
 		editorTemplate = template.Must(
-			template.ParseFiles(args["-t"].(string)),
+			template.ParseFiles(templateFileName),
 		)
 	}
 
 	matches := reStashCommentLink.FindStringSubmatch(string(inputData))
-	if len(matches) != 0 {
-		var (
-			reviewURL = matches[0]
-			commentID = matches[1]
-		)
+	if len(matches) == 0 {
+		if fallbackAction == "" {
+			log.Fatalf("specified file does not contains link to comment")
+		}
 
-		openTempEditor(editorTemplate, reviewURL, commentID)
-		os.Exit(0)
+		openExternalProgram(fallbackAction)
 	}
 
-	if args["-x"] == nil {
-		log.Printf("specified file does not contains link to comment")
-		os.Exit(1)
-	}
+	var (
+		reviewURL = matches[0]
+		commentID = matches[1]
+	)
 
-	openExternalProgram(args["-x"].(string))
+	if useCache {
+		if ok, cache := retrieveFromCache(reviewURL, commentID); ok {
+			defer cache.Close()
+
+			cacheData, err := ioutil.ReadAll(cache)
+			if err != nil {
+				log.Fatalf("can't read cache file: %s", err)
+			}
+
+			fmt.Print(string(cacheData))
+
+			os.Exit(0)
+		} else {
+			openTempEditor(editorTemplate, reviewURL, commentID, cache)
+		}
+	} else {
+		openTempEditor(editorTemplate, reviewURL, commentID, nil)
+	}
 }
 
 func openExternalProgram(cmdline string) {
@@ -130,33 +156,33 @@ func openExternalProgram(cmdline string) {
 	}
 }
 
-func openTempEditor(
-	editorTemplate *template.Template,
-	reviewURL string,
-	commentID string,
-) {
+func retrieveFromCache(reviewURL string, commentID string) (bool, *os.File) {
 	hash := getHash(reviewURL, commentID)
 
 	cachePath := filepath.Join(os.TempDir(), "ash-mailcap-cache."+hash)
 	cacheFile, err := os.OpenFile(cachePath, os.O_CREATE|os.O_RDWR, 0664)
 	if err != nil {
 		log.Printf("can't open cache file %s: %s", cachePath, err)
-		return
+
+		return false, nil
 	}
 
-	defer cacheFile.Close()
-
-	cacheData, err := ioutil.ReadAll(cacheFile)
+	stat, err := cacheFile.Stat()
 	if err != nil {
-		log.Printf("can't read cache file %s: %s", cachePath, err)
-		return
+		log.Printf("can't stat cache file %s: %s", cachePath, err)
+
+		return false, nil
 	}
 
-	if len(cacheData) > 0 {
-		fmt.Print(string(cacheData))
-		return
-	}
+	return stat.Size() > 0, cacheFile
+}
 
+func openTempEditor(
+	editorTemplate *template.Template,
+	reviewURL string,
+	commentID string,
+	cache io.Writer,
+) {
 	tempEditorExecutable, err := ioutil.TempFile(
 		os.TempDir(), "ash-mailcap-editor.",
 	)
@@ -194,8 +220,14 @@ func openTempEditor(
 
 	ash.Stdin = os.Stdin
 
-	ash.Stdout = io.MultiWriter(os.Stdout, cacheFile)
-	ash.Stderr = io.MultiWriter(os.Stderr, cacheFile)
+	if cache != nil {
+		ash.Stdout = io.MultiWriter(os.Stdout, cache)
+		ash.Stderr = io.MultiWriter(os.Stderr, cache)
+
+	} else {
+		ash.Stdout = os.Stdout
+		ash.Stderr = os.Stderr
+	}
 
 	err = ash.Run()
 	if err != nil {
