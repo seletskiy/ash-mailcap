@@ -53,6 +53,11 @@ Install `ash-mailcap-autoview` and then add following to the ~/.mailcap:
 
 ```
 text/html; ash-mailcap \
+               -x "i3-sensible-browser %s" %s; \
+               needsterminal;
+
+text/html; ash-mailcap \
+               -c \
                -x "lynx --force-html --dump %s" \
                -t /usr/share/ash-mailcap-autoview/editor %s; \
                copiousoutput
